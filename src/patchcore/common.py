@@ -184,12 +184,12 @@ class Aggregator(torch.nn.Module):
 
 
 class RescaleSegmentor:
-    def __init__(self, device, target_size=224):
+    def __init__(self, device, target_size=512):
         self.device = device
         self.target_size = target_size
         self.smoothing = 4
 
-    def convert_to_segmentation(self, patch_scores):
+    def convert_to_segmentation(self, patch_scores, size):
 
         with torch.no_grad():
             if isinstance(patch_scores, np.ndarray):
@@ -197,7 +197,7 @@ class RescaleSegmentor:
             _scores = patch_scores.to(self.device)
             _scores = _scores.unsqueeze(1)
             _scores = F.interpolate(
-                _scores, size=self.target_size, mode="bilinear", align_corners=False
+                _scores, size=size, mode="bilinear", align_corners=False
             )
             _scores = _scores.squeeze(1)
             patch_scores = _scores.cpu().numpy()

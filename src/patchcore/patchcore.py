@@ -156,7 +156,7 @@ class PatchCore(torch.nn.Module):
 
         features = self.forward_modules["preprocessing"](features)
         features = self.forward_modules["preadapt_aggregator"](features)
-        # print(f'features: {features.shape}')
+        print(f'features: {features.shape}')
 
         if provide_patch_shapes:
             return _detach(features), patch_shapes
@@ -267,8 +267,8 @@ class PatchCore(torch.nn.Module):
                     labels_gt.extend(image["is_anomaly"].numpy().tolist())
                     masks_gt.extend(image["mask"].numpy().tolist())
                     # image = image["normal_img"]
-                _scores, _masks = self._predict(image["normal_img"], image["abnormal_img"])
-                for idx, (score, mask) in enumerate(zip(_scores, _masks)):
+                _scores, _ = self._predict(image["normal_img"], image["abnormal_img"])
+                for idx, (score, _) in enumerate(zip(_scores, _)):
                     # print(image["query"][idx].unsqueeze(0).shape, image["query"].shape)
                     if score < 0.2:
                         score, mask = self.predict_from_all(image["query"][idx].unsqueeze(0), image["query"][idx].unsqueeze(0))
@@ -309,7 +309,7 @@ class PatchCore(torch.nn.Module):
             scales = patch_shapes[0]
             patch_scores = patch_scores.reshape(batchsize, scales[0], scales[1])
 
-            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores)
+            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores, normal_images.shape[-2:])
 
         return [score for score in image_scores], [mask for mask in masks]
 
@@ -348,7 +348,8 @@ class PatchCore(torch.nn.Module):
             scales = patch_shapes[0]
             patch_scores = patch_scores.reshape(batchsize, scales[0], scales[1])
 
-            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores)
+            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores, normal_images.shape[-2:])
+            print(f'masks shape: {masks[0].shape}')
 
         return [score for score in image_scores], [mask for mask in masks]
     
@@ -394,7 +395,7 @@ class PatchCore(torch.nn.Module):
             scales = patch_shapes[0]
             patch_scores = patch_scores.reshape(batchsize, scales[0], scales[1])
 
-            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores)
+            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores, normal_images.shape[-2:])
 
         return [score for score in image_scores], [mask for mask in masks]
     

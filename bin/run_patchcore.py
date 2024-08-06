@@ -81,6 +81,7 @@ def run(
             sampler = methods["get_sampler"](
                 device,
             )
+            print('imagesize', imagesize)
             PatchCore_list = methods["get_patchcore"](imagesize, sampler, device)
             if len(PatchCore_list) > 1:
                 LOGGER.info(
