@@ -94,7 +94,7 @@ def run(
                     "Training models ({}/{})".format(i + 1, len(PatchCore_list))
                 )
                 torch.cuda.empty_cache()
-                PatchCore.fit(dataloaders["training"])
+                PatchCore.fit(dataloaders["training"],dataloaders["training"])
 
             torch.cuda.empty_cache()
             aggregator = {"scores": [], "segmentations": []}
@@ -130,6 +130,8 @@ def run(
             )
             segmentations = (segmentations - min_scores) / (max_scores - min_scores)
             segmentations = np.mean(segmentations, axis=0)
+            print(segmentations.shape, np.unique(segmentations), max_scores, min_scores)
+            segmentations = np.squeeze(segmentations)
 
             anomaly_labels = [
                 x[1] != "good" for x in dataloaders["testing"].dataset.data_to_iterate
@@ -138,7 +140,7 @@ def run(
             # (Optional) Plot example images.
             if save_segmentation_images:
                 image_paths = [
-                    x[2] for x in dataloaders["testing"].dataset.data_to_iterate
+                    x[5] for x in dataloaders["testing"].dataset.data_to_iterate
                 ]
                 mask_paths = [
                     x[3] for x in dataloaders["testing"].dataset.data_to_iterate
@@ -335,7 +337,7 @@ def sampler(name, percentage):
 @click.argument("data_path", type=click.Path(exists=True, file_okay=False))
 @click.option("--subdatasets", "-d", multiple=True, type=str, required=True)
 @click.option("--train_val_split", type=float, default=1, show_default=True)
-@click.option("--batch_size", default=2, type=int, show_default=True)
+@click.option("--batch_size", default=1, type=int, show_default=True)
 @click.option("--num_workers", default=8, type=int, show_default=True)
 @click.option("--resize", default=256, type=int, show_default=True)
 @click.option("--imagesize", default=224, type=int, show_default=True)

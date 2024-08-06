@@ -23,4 +23,4 @@ patch_core -b wideresnet50 -le layer2 -le layer3 --faiss_on_gpu \
 --pretrain_embed_dimension 1024 --target_embed_dimension 1024 \
 --anomaly_scorer_num_nn 1 --patchsize 3 \
 sampler -p 0.1 approx_greedy_coreset \
-dataset --resize 256 --imagesize 224 -d breakfast_box ${dataset_flags_str} mvtec $datapath
+dataset --resize 256 --imagesize 224 -d all mvtec $datapath

@@ -13,6 +13,12 @@ import patchcore.backbones
 import patchcore.common
 import patchcore.sampler
 
+import matplotlib.pyplot as plt
+import cv2
+import sys
+from segment_anything import sam_model_registry, SamPredictor
+from torchvision.transforms import ToPILImage
+from PIL import Image
 LOGGER = logging.getLogger(__name__)
 
 
@@ -21,6 +27,8 @@ class PatchCore(torch.nn.Module):
         """PatchCore anomaly detection class."""
         super(PatchCore, self).__init__()
         self.device = device
+        
+        
 
     def load(
         self,
@@ -66,10 +74,21 @@ class PatchCore(torch.nn.Module):
 
         self.forward_modules["preadapt_aggregator"] = preadapt_aggregator
 
-        self.anomaly_scorer = patchcore.common.NearestNeighbourScorer(
+        self.anomaly_scorer_normal = patchcore.common.NearestNeighbourScorer(
             n_nearest_neighbours=anomaly_score_num_nn, nn_method=nn_method
         )
-
+        
+        self.anomaly_scorer_abnormal = patchcore.common.NearestNeighbourScorer(
+            n_nearest_neighbours=anomaly_score_num_nn, nn_method=nn_method
+        )
+        
+        self.support_scorer_normal = patchcore.common.NearestNeighbourScorer(
+            n_nearest_neighbours=anomaly_score_num_nn, nn_method=nn_method
+        )
+        self.support_scorer_abnormal = patchcore.common.NearestNeighbourScorer(
+            n_nearest_neighbours=anomaly_score_num_nn, nn_method=nn_method
+        )
+        
         self.anomaly_segmentor = patchcore.common.RescaleSegmentor(
             device=self.device, target_size=input_shape[-2:]
         )
@@ -82,6 +101,7 @@ class PatchCore(torch.nn.Module):
             for image in data:
                 if isinstance(image, dict):
                     image = image["image"]
+                # print(image.shape, image["mask"].shape, image["query"].shape)
                 with torch.no_grad():
                     input_image = image.to(torch.float).to(self.device)
                     features.append(self._embed(input_image))
@@ -113,7 +133,6 @@ class PatchCore(torch.nn.Module):
             _features = features[i]
             patch_dims = patch_shapes[i]
 
-            # TODO(pgehler): Add comments
             _features = _features.reshape(
                 _features.shape[0], patch_dims[0], patch_dims[1], *_features.shape[2:]
             )
@@ -135,24 +154,19 @@ class PatchCore(torch.nn.Module):
             features[i] = _features
         features = [x.reshape(-1, *x.shape[-3:]) for x in features]
 
-        # As different feature backbones & patching provide differently
-        # sized features, these are brought into the correct form here.
         features = self.forward_modules["preprocessing"](features)
         features = self.forward_modules["preadapt_aggregator"](features)
+        # print(f'features: {features.shape}')
 
         if provide_patch_shapes:
             return _detach(features), patch_shapes
         return _detach(features)
 
-    def fit(self, training_data):
-        """PatchCore training.
+    def fit(self, normal_data, abnormal_data):
+        """PatchCore training with separate normal and abnormal memory banks."""
+        self._fill_memory_bank(normal_data, abnormal_data)
 
-        This function computes the embeddings of the training data and fills the
-        memory bank of SPADE.
-        """
-        self._fill_memory_bank(training_data)
-
-    def _fill_memory_bank(self, input_data):
+    def _fill_memory_bank(self, normal_data, abnormal_data):
         """Computes and sets the support features for SPADE."""
         _ = self.forward_modules.eval()
 
@@ -161,22 +175,81 @@ class PatchCore(torch.nn.Module):
                 input_image = input_image.to(torch.float).to(self.device)
                 return self._embed(input_image)
 
-        features = []
-        with tqdm.tqdm(
-            input_data, desc="Computing support features...", position=1, leave=False
-        ) as data_iterator:
-            for image in data_iterator:
-                if isinstance(image, dict):
-                    image = image["image"]
-                features.append(_image_to_features(image))
+        def _compute_features(data, flag=0):
+            features = []
+            with tqdm.tqdm(
+                data, desc="Computing support features...", position=1, leave=False
+            ) as data_iterator:
+                for image in data_iterator:
+                    if isinstance(image, dict):
+                        # print(torch.unique(image['mask']))
+                        # print(image['image'].shape, image["mask"].shape, image["query"].shape)
+                        if flag == 0:
+                            image = image["normal_img"]
+                        else:
+                            image = image["abnormal_img"]
 
-        features = np.concatenate(features, axis=0)
-        features = self.featuresampler.run(features)
+                        to_pil = ToPILImage()
+                        image_pil = to_pil(image[0].squeeze().cpu())
+                        image_pil.save(os.path.join('/home/waylon/HD/AD', 'image.png'))
+                        
+                    features.append(_image_to_features(image))
+            return np.concatenate(features, axis=0)
 
-        self.anomaly_scorer.fit(detection_features=[features])
+        features_normal = _compute_features(normal_data,0)
+        features_normal = self.featuresampler.run(features_normal)
+        features_abnormal = _compute_features(abnormal_data,1)
+        features_abnormal = self.featuresampler.run(features_abnormal)
+        
+        self.anomaly_scorer_normal.fit(detection_features=[features_normal])
+        self.anomaly_scorer_abnormal.fit(detection_features=[features_abnormal])
 
+    def fill_memory_bank_support(self, support_data):
+        """Computes and sets the support features for SPADE."""
+        _ = self.forward_modules.eval()
+
+        def _image_to_features(input_image):
+            with torch.no_grad():
+                input_image = input_image.to(torch.float).to(self.device)
+                return self._embed(input_image)
+
+        def _compute_features(data, flag):
+            features = []
+            with tqdm.tqdm(
+                data, desc="Computing support features...", position=1, leave=False
+            ) as data_iterator:
+                i = 0
+                for image in data_iterator:
+                    i +=1
+                    if isinstance(image, dict):
+                        # print(torch.unique(image['mask']))
+                        # print(image['image'].shape, image["mask"].shape, image["query"].shape)
+                        if flag == 0:
+                            image = image["normal_img"]
+                            to_pil = ToPILImage()
+                            image_pil = to_pil(image[0].squeeze().cpu())
+                            image_pil.save(os.path.join('/home/waylon/HD/AD', 'normal_image' + str(i) + '.png'))
+                        else:
+                            image = image["abnormal_img"]
+
+                            to_pil = ToPILImage()
+                            image_pil = to_pil(image[0].squeeze().cpu())
+                            image_pil.save(os.path.join('/home/waylon/HD/AD', 'abnormal_image' + str(i) + '.png'))
+                        
+                    features.append(_image_to_features(image))
+            return np.concatenate(features, axis=0)
+
+        features_normal = _compute_features(support_data,0)
+        features_normal = self.featuresampler.run(features_normal)
+        features_abnormal = _compute_features(support_data,1)
+        features_abnormal = self.featuresampler.run(features_abnormal)
+        
+        self.support_scorer_normal.fit(detection_features=[features_normal])
+        self.support_scorer_abnormal.fit(detection_features=[features_abnormal])
+    
     def predict(self, data):
         if isinstance(data, torch.utils.data.DataLoader):
+            self.fill_memory_bank_support(data)
             return self._predict_dataloader(data)
         return self._predict(data)
 
@@ -193,26 +266,39 @@ class PatchCore(torch.nn.Module):
                 if isinstance(image, dict):
                     labels_gt.extend(image["is_anomaly"].numpy().tolist())
                     masks_gt.extend(image["mask"].numpy().tolist())
-                    image = image["image"]
-                _scores, _masks = self._predict(image)
-                for score, mask in zip(_scores, _masks):
+                    # image = image["normal_img"]
+                _scores, _masks = self._predict(image["normal_img"], image["abnormal_img"])
+                for idx, (score, mask) in enumerate(zip(_scores, _masks)):
+                    # print(image["query"][idx].unsqueeze(0).shape, image["query"].shape)
+                    if score < 0.2:
+                        score, mask = self.predict_from_all(image["query"][idx].unsqueeze(0), image["query"][idx].unsqueeze(0))
+                    else:
+                        score, mask = self.predict_from_support(image["query"][idx].unsqueeze(0), image["query"][idx].unsqueeze(0))
                     scores.append(score)
                     masks.append(mask)
         return scores, masks, labels_gt, masks_gt
 
-    def _predict(self, images):
+    def _predict(self, normal_images, abnormal_images):
         """Infer score and mask for a batch of images."""
-        images = images.to(torch.float).to(self.device)
+        normal_images = normal_images.to(torch.float).to(self.device)
+        abnormal_images = abnormal_images.to(torch.float).to(self.device)
         _ = self.forward_modules.eval()
 
-        batchsize = images.shape[0]
+        batchsize = normal_images.shape[0]
         with torch.no_grad():
-            features, patch_shapes = self._embed(images, provide_patch_shapes=True)
+            features, patch_shapes = self._embed(normal_images, provide_patch_shapes=True)
             features = np.asarray(features)
+            patch_scores_normal = self.anomaly_scorer_normal.predict([features])[0]
 
-            patch_scores = image_scores = self.anomaly_scorer.predict([features])[0]
+            features, patch_shapes = self._embed(abnormal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_abnormal = self.anomaly_scorer_abnormal.predict([features])[0]
+
+            # Combine the scores from normal and abnormal memory banks
+            patch_scores = np.maximum(patch_scores_normal - patch_scores_abnormal, 0)
+
             image_scores = self.patch_maker.unpatch_scores(
-                image_scores, batchsize=batchsize
+                patch_scores, batchsize=batchsize
             )
             image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
             image_scores = self.patch_maker.score(image_scores)
@@ -227,6 +313,91 @@ class PatchCore(torch.nn.Module):
 
         return [score for score in image_scores], [mask for mask in masks]
 
+    def predict_from_support(self, normal_images, abnormal_images):
+        """Infer score and mask for a batch of images."""
+        normal_images = normal_images.to(torch.float).to(self.device)
+        abnormal_images = abnormal_images.to(torch.float).to(self.device)
+        _ = self.forward_modules.eval()
+
+        print(f'normal_images shape: {normal_images.shape}')
+        
+        batchsize = normal_images.shape[0]
+        with torch.no_grad():
+            features, patch_shapes = self._embed(normal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_normal = self.support_scorer_normal.predict([features])[0]
+
+            features, patch_shapes = self._embed(abnormal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_abnormal = self.support_scorer_abnormal.predict([features])[0]
+
+            # Combine the scores from normal and abnormal memory banks
+            patch_scores = np.maximum(patch_scores_normal, 0)
+            # print(f'scores: {patch_scores_normal}, {patch_scores_abnormal}')
+            # print(f'patch_scores: {patch_scores}')  
+
+            image_scores = self.patch_maker.unpatch_scores(
+                patch_scores, batchsize=batchsize
+            )
+            image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
+            image_scores = self.patch_maker.score(image_scores)
+
+            patch_scores = self.patch_maker.unpatch_scores(
+                patch_scores, batchsize=batchsize
+            )
+            scales = patch_shapes[0]
+            patch_scores = patch_scores.reshape(batchsize, scales[0], scales[1])
+
+            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores)
+
+        return [score for score in image_scores], [mask for mask in masks]
+    
+    def predict_from_all(self, normal_images, abnormal_images):
+        """Infer score and mask for a batch of images."""
+        normal_images = normal_images.to(torch.float).to(self.device)
+        abnormal_images = abnormal_images.to(torch.float).to(self.device)
+        _ = self.forward_modules.eval()
+
+        batchsize = normal_images.shape[0]
+        with torch.no_grad():
+            features, patch_shapes = self._embed(normal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_normal = self.support_scorer_normal.predict([features])[0]
+
+            features, patch_shapes = self._embed(abnormal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_abnormal = self.support_scorer_abnormal.predict([features])[0]
+
+            # Combine the scores from normal and abnormal memory banks
+            patch_scores = np.maximum(patch_scores_normal - patch_scores_abnormal, 0)
+            
+            features, patch_shapes = self._embed(normal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_normal = self.anomaly_scorer_normal.predict([features])[0]
+
+            features, patch_shapes = self._embed(abnormal_images, provide_patch_shapes=True)
+            features = np.asarray(features)
+            patch_scores_abnormal = self.anomaly_scorer_abnormal.predict([features])[0]
+
+            patch_scores = np.maximum(patch_scores_normal - patch_scores_abnormal, patch_scores)
+            
+
+            image_scores = self.patch_maker.unpatch_scores(
+                patch_scores, batchsize=batchsize
+            )
+            image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
+            image_scores = self.patch_maker.score(image_scores)
+
+            patch_scores = self.patch_maker.unpatch_scores(
+                patch_scores, batchsize=batchsize
+            )
+            scales = patch_shapes[0]
+            patch_scores = patch_scores.reshape(batchsize, scales[0], scales[1])
+
+            masks = self.anomaly_segmentor.convert_to_segmentation(patch_scores)
+
+        return [score for score in image_scores], [mask for mask in masks]
+    
     @staticmethod
     def _params_file(filepath, prepend=""):
         return os.path.join(filepath, prepend + "patchcore_params.pkl")
@@ -320,3 +491,24 @@ class PatchMaker:
         if was_numpy:
             return x.numpy()
         return x
+
+
+def show_mask(mask, ax, random_color=False):
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    else:
+        color = np.array([30/255, 144/255, 255/255, 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+
+def show_points(coords, labels, ax, marker_size=375):
+    pos_points = coords[labels==1]
+    neg_points = coords[labels==0]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
+
+def show_box(box, ax):
+    x0, y0 = box[0], box[1]
+    w, h = box[2] - box[0], box[3] - box[1]
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0,0,0,0), lw=2))
